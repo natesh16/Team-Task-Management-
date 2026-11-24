@@ -76,8 +76,26 @@ const getTasks = asyncHandler(async (req, res) => {
 // @route   POST /api/tasks
 // @access  Private
 const createTask = asyncHandler(async (req, res) => {
-  const { title, description, status, priority, team, assignedTo, dueDate } =
-    req.body;
+  const {
+    title,
+    description,
+    status,
+    priority,
+    team,
+    assignedTo,
+    dueDate,
+    assignmentReason,
+  } = req.body;
+
+  if (!title || !title.trim()) {
+    res.status(400);
+    throw new Error("Please add a task title");
+  }
+
+  if (!team) {
+    res.status(400);
+    throw new Error("Please select a team for this task");
+  }
 
   const teamExists = await Team.findById(team);
   if (!teamExists) {
@@ -115,7 +133,7 @@ const createTask = asyncHandler(async (req, res) => {
             assignedTo,
             assignedBy: req.user.id,
             assignedAt: new Date(),
-            reason: "Initial assignment",
+            reason: assignmentReason || "Initial assignment",
           },
         ]
       : [],
@@ -147,37 +165,44 @@ const updateTask = asyncHandler(async (req, res) => {
     throw new Error("Not authorized to update this task");
   }
 
-  // Validate assignee is a team member if being changed
-  if (req.body.assignedTo !== undefined && req.body.assignedTo !== null) {
-    const assigneeIsMember = await isTeamMember(task.team, req.body.assignedTo);
-    if (!assigneeIsMember) {
-      res.status(400);
-      throw new Error("Assignee must be a member of the team");
+  // Only allow editable fields (never team / createdBy)
+  const editableFields = ["title", "description", "status", "priority", "dueDate"];
+  editableFields.forEach((field) => {
+    if (req.body[field] !== undefined) {
+      task[field] = req.body[field];
+    }
+  });
+
+  // Handle assignee changes with assignment history
+  if (req.body.assignedTo !== undefined) {
+    const nextAssignee = req.body.assignedTo || null;
+    const currentAssignee = task.assignedTo ? task.assignedTo.toString() : null;
+    const nextAssigneeId = nextAssignee ? nextAssignee.toString() : null;
+
+    if (nextAssigneeId) {
+      const assigneeIsMember = await isTeamMember(task.team, nextAssigneeId);
+      if (!assigneeIsMember) {
+        res.status(400);
+        throw new Error("Assignee must be a member of the team");
+      }
     }
 
-    // Record assignment history if assignee changed
-    if (req.body.assignedTo !== task.assignedTo) {
+    if (currentAssignee !== nextAssigneeId) {
       task.assignmentHistory.push({
-        assignedTo: req.body.assignedTo,
+        assignedTo: nextAssigneeId,
         assignedBy: req.user.id,
         assignedAt: new Date(),
-        reason: req.body.assignmentReason || "Task reassigned",
+        reason:
+          req.body.assignmentReason ||
+          (nextAssigneeId ? "Task reassigned" : "Task unassigned"),
       });
+      task.assignedTo = nextAssigneeId;
     }
-  } else if (req.body.assignedTo === null && task.assignedTo) {
-    // Unassigning - record history
-    task.assignmentHistory.push({
-      assignedTo: null,
-      assignedBy: req.user.id,
-      assignedAt: new Date(),
-      reason: req.body.assignmentReason || "Task unassigned",
-    });
   }
 
-  const updatedTask = await Task.findByIdAndUpdate(req.params.id, req.body, {
-    new: true,
-    runValidators: true,
-  })
+  await task.save();
+
+  const updatedTask = await Task.findById(task._id)
     .populate("assignedTo", "name email")
     .populate("createdBy", "name email")
     .populate("assignmentHistory.assignedTo", "name email")
@@ -319,7 +344,7 @@ const unassignTask = asyncHandler(async (req, res) => {
 // @access  Private
 const getAssignmentHistory = asyncHandler(async (req, res) => {
   const task = await Task.findById(req.params.id)
-    .select("assignmentHistory title assignedTo")
+    .select("assignmentHistory title assignedTo team")
     .populate("assignmentHistory.assignedTo", "name email")
     .populate("assignmentHistory.assignedBy", "name email");
 
@@ -356,6 +381,7 @@ const getMyTasks = asyncHandler(async (req, res) => {
 
   const tasks = await Task.find(filter)
     .populate("team", "name")
+    .populate("assignedTo", "name email")
     .populate("createdBy", "name email")
     .populate("assignmentHistory.assignedBy", "name email")
     .sort({ createdAt: -1 })
@@ -375,6 +401,93 @@ const getMyTasks = asyncHandler(async (req, res) => {
   });
 });
 
+// @desc    Get dashboard statistics for current user
+// @route   GET /api/tasks/stats
+// @access  Private
+const getTaskStats = asyncHandler(async (req, res) => {
+  const teams = await Team.find({ "members.user": req.user.id }).select(
+    "_id name description"
+  );
+  const teamIds = teams.map((team) => team._id);
+
+  const tasks = await Task.find({ team: { $in: teamIds } })
+    .populate("assignedTo", "name email")
+    .populate("createdBy", "name email")
+    .populate("team", "name")
+    .sort({ updatedAt: -1 })
+    .limit(500);
+
+  const now = new Date();
+  const userId = req.user.id.toString();
+
+  const stats = {
+    total: tasks.length,
+    todo: 0,
+    inProgress: 0,
+    review: 0,
+    done: 0,
+    overdue: 0,
+    highPriority: 0,
+    assignedToMe: 0,
+    completedByMe: 0,
+    completionRate: 0,
+  };
+
+  tasks.forEach((task) => {
+    if (task.status === "todo") stats.todo += 1;
+    if (task.status === "in-progress") stats.inProgress += 1;
+    if (task.status === "review") stats.review += 1;
+    if (task.status === "done") stats.done += 1;
+    if (task.status !== "done" && task.dueDate && new Date(task.dueDate) < now) {
+      stats.overdue += 1;
+    }
+    if (task.priority === "high" && task.status !== "done") {
+      stats.highPriority += 1;
+    }
+    const assignee = task.assignedTo?._id
+      ? task.assignedTo._id.toString()
+      : task.assignedTo?.toString();
+    if (assignee === userId) {
+      stats.assignedToMe += 1;
+      if (task.status === "done") stats.completedByMe += 1;
+    }
+  });
+
+  stats.completionRate = stats.total
+    ? Math.round((stats.done / stats.total) * 100)
+    : 0;
+
+  const perTeam = teams.map((team) => {
+    const teamTasks = tasks.filter(
+      (task) => task.team?._id?.toString() === team._id.toString()
+    );
+    const done = teamTasks.filter((task) => task.status === "done").length;
+    return {
+      _id: team._id,
+      name: team.name,
+      description: team.description,
+      total: teamTasks.length,
+      done,
+      open: teamTasks.length - done,
+      progress: teamTasks.length
+        ? Math.round((done / teamTasks.length) * 100)
+        : 0,
+    };
+  });
+
+  const myTasks = await Task.find({ assignedTo: req.user.id })
+    .populate("team", "name")
+    .sort({ dueDate: 1, createdAt: -1 })
+    .limit(6);
+
+  res.json({
+    stats,
+    perTeam,
+    recent: tasks.slice(0, 6),
+    myTasks,
+  });
+});
+
 module.exports = {
   getTasks,
   createTask,
@@ -384,4 +497,5 @@ module.exports = {
   unassignTask,
   getAssignmentHistory,
   getMyTasks,
+  getTaskStats,
 };

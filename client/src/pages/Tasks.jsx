@@ -1,543 +1,1296 @@
-import { useState, useEffect } from "react";
+import React, { useEffect, useMemo, useState } from "react";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import api from "../services/api";
+import { useAuth } from "../context/AuthContext";
+import Icon from "../components/Icon";
+import Avatar from "../components/Avatar";
+import Modal from "../components/Modal";
+import EmptyState from "../components/EmptyState";
+import { StatusBadge, PriorityBadge, STATUS_META } from "../components/Badge";
+import Loader from "../components/Loader";
+import { useToast } from "../components/Toast";
+import {
+  dueLabel,
+  formatDateTime,
+  getErrorMessage,
+  isOverdue,
+  taskAssigneeId,
+  taskAssigneeName,
+} from "../utils/format";
+
+const COLUMNS = ["todo", "in-progress", "review", "done"];
+const STATUS_OPTIONS = [
+  { value: "todo", label: "To do" },
+  { value: "in-progress", label: "In progress" },
+  { value: "review", label: "In review" },
+  { value: "done", label: "Done" },
+];
+
+const emptyTaskForm = (teamId, status = "todo") => ({
+  title: "",
+  description: "",
+  status,
+  priority: "medium",
+  team: teamId || "",
+  assignedTo: "",
+  dueDate: "",
+  assignmentReason: "",
+});
 
 export default function Tasks() {
+  const { user } = useAuth();
+  const navigate = useNavigate();
+  const toast = useToast();
+  const [searchParams, setSearchParams] = useSearchParams();
+
+  const initialView = searchParams.get("view") === "my" ? "my" : "team";
+  const initialTeam = searchParams.get("team") || "";
+
   const [teams, setTeams] = useState([]);
-  const [teamMembers, setTeamMembers] = useState([]);
-  const [selectedTeam, setSelectedTeam] = useState("");
-  const [tasks, setTasks] = useState([]);
+  const [selectedTeam, setSelectedTeam] = useState(initialTeam);
+  const [activeTab, setActiveTab] = useState(initialView);
+  const [teamTasks, setTeamTasks] = useState([]);
   const [myTasks, setMyTasks] = useState([]);
-  const [form, setForm] = useState({
-    title: "",
-    description: "",
-    status: "todo",
-    priority: "medium",
-    assignedTo: "",
-    dueDate: "",
-    assignmentReason: "",
-  });
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
-  const [editingId, setEditingId] = useState(null);
-  const [assignModal, setAssignModal] = useState(false);
-  const [assignTaskId, setAssignTaskId] = useState(null);
-  const [assignForm, setAssignForm] = useState({
-    assignedTo: "",
-    reason: "",
-  });
-  const [historyModal, setHistoryModal] = useState(false);
+  const [teamMembers, setTeamMembers] = useState([]);
+  const [loadingTeams, setLoadingTeams] = useState(true);
+  const [loadingTasks, setLoadingTasks] = useState(true);
+  const [view, setView] = useState(
+    () => localStorage.getItem("taskmask-view") || "board"
+  );
+
+  const [search, setSearch] = useState("");
+  const [priorityFilter, setPriorityFilter] = useState("all");
+  const [assigneeFilter, setAssigneeFilter] = useState("all");
+
+  const [modal, setModal] = useState(null);
+  const [taskForm, setTaskForm] = useState(emptyTaskForm(initialTeam));
+  const [createMembers, setCreateMembers] = useState([]);
+  const [savingTask, setSavingTask] = useState(false);
+  const [formError, setFormError] = useState("");
+
+  const [assignTask, setAssignTask] = useState(null);
+  const [assignMembers, setAssignMembers] = useState([]);
+  const [assignForm, setAssignForm] = useState({ assignedTo: "", reason: "" });
+  const [assignLoading, setAssignLoading] = useState(false);
+  const [assignSaving, setAssignSaving] = useState(false);
+
   const [historyTask, setHistoryTask] = useState(null);
-  const [activeTab, setActiveTab] = useState("team"); // "team" | "my"
+  const [historyData, setHistoryData] = useState(null);
+  const [historyLoading, setHistoryLoading] = useState(false);
+
+  const [deleteTarget, setDeleteTarget] = useState(null);
+  const [deleting, setDeleting] = useState(false);
+
+  const [draggedId, setDraggedId] = useState(null);
+  const [dragOver, setDragOver] = useState(null);
 
   useEffect(() => {
-    fetchTeams();
-    fetchMyTasks();
+    localStorage.setItem("taskmask-view", view);
+  }, [view]);
+
+  async function loadTeams() {
+    setLoadingTeams(true);
+    try {
+      const res = await api.get("/teams");
+      const list = res.data || [];
+      setTeams(list);
+
+      if (list.length) {
+        const hasParam = initialTeam && list.some((team) => team._id === initialTeam);
+        setSelectedTeam((current) => {
+          if (current && list.some((team) => team._id === current)) return current;
+          return hasParam ? initialTeam : list[0]._id;
+        });
+      }
+    } catch (error) {
+      toast.error(getErrorMessage(error, "Failed to load teams"));
+    } finally {
+      setLoadingTeams(false);
+    }
+  }
+
+  async function loadMyTasks({ silent = false } = {}) {
+    try {
+      const res = await api.get("/tasks/my-tasks", {
+        params: { page: 1, limit: 200 },
+      });
+      setMyTasks(res.data.tasks || res.data || []);
+    } catch (error) {
+      if (!silent) toast.error(getErrorMessage(error, "Failed to load your tasks"));
+    }
+  }
+
+  async function loadTeamData(teamId, { silent = false } = {}) {
+    if (!teamId) {
+      setTeamTasks([]);
+      setTeamMembers([]);
+      setLoadingTasks(false);
+      return;
+    }
+    if (!silent) setLoadingTasks(true);
+    try {
+      const [tasksRes, teamRes] = await Promise.all([
+        api.get("/tasks", { params: { team: teamId, page: 1, limit: 200 } }),
+        api.get(`/teams/${teamId}`),
+      ]);
+      setTeamTasks(tasksRes.data.tasks || tasksRes.data || []);
+      setTeamMembers(teamRes.data.members || []);
+    } catch (error) {
+      if (!silent) toast.error(getErrorMessage(error, "Failed to load tasks"));
+    } finally {
+      if (!silent) setLoadingTasks(false);
+    }
+  }
+
+  useEffect(() => {
+    loadTeams();
+    loadMyTasks();
   }, []);
 
   useEffect(() => {
-    if (selectedTeam && activeTab === "team") {
-      fetchTasks();
-      fetchTeamMembers();
-    }
-  }, [selectedTeam, activeTab]);
+    if (selectedTeam) loadTeamData(selectedTeam);
+  }, [selectedTeam]);
 
-  const fetchTeams = async () => {
-    try {
-      const res = await api.get("/teams");
-      setTeams(res.data);
-      if (res.data.length > 0 && !selectedTeam) {
-        setSelectedTeam(res.data[0]._id);
+  useEffect(() => {
+    const teamParam = searchParams.get("team");
+    if (
+      teamParam &&
+      teamParam !== selectedTeam &&
+      teams.some((team) => team._id === teamParam)
+    ) {
+      setSelectedTeam(teamParam);
+    }
+    const wantedTab = searchParams.get("view") === "my" ? "my" : "team";
+    if (wantedTab !== activeTab) setActiveTab(wantedTab);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams, teams]);
+
+  useEffect(() => {
+    if (searchParams.get("new") !== "1" || loadingTeams) return;
+    if (!teams.length) return;
+    openCreate("todo");
+    const next = new URLSearchParams(searchParams);
+    next.delete("new");
+    setSearchParams(next, { replace: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams, loadingTeams, teams]);
+
+  useEffect(() => {
+    if (modal?.type !== "create" || !taskForm.team) return;
+    let active = true;
+    api
+      .get(`/teams/${taskForm.team}`)
+      .then((res) => {
+        if (active) setCreateMembers(res.data.members || []);
+      })
+      .catch(() => {
+        if (active) setCreateMembers([]);
+      });
+    return () => {
+      active = false;
+    };
+  }, [modal?.type, taskForm.team]);
+
+  const currentTasks = activeTab === "team" ? teamTasks : myTasks;
+
+  const filteredTasks = useMemo(() => {
+    const query = search.trim().toLowerCase();
+    return currentTasks.filter((task) => {
+      if (
+        query &&
+        !task.title?.toLowerCase().includes(query) &&
+        !task.description?.toLowerCase().includes(query)
+      ) {
+        return false;
       }
-    } catch (err) {
-      setError("Failed to load teams");
+      if (priorityFilter !== "all" && task.priority !== priorityFilter) {
+        return false;
+      }
+      if (assigneeFilter !== "all") {
+        const assigneeId = taskAssigneeId(task);
+        if (assigneeFilter === "unassigned" && assigneeId) return false;
+        if (assigneeFilter !== "unassigned" && assigneeId !== assigneeFilter) {
+          return false;
+        }
+      }
+      return true;
+    });
+  }, [currentTasks, search, priorityFilter, assigneeFilter]);
+
+  const summary = useMemo(() => {
+    const done = filteredTasks.filter((task) => task.status === "done").length;
+    const overdue = filteredTasks.filter(isOverdue).length;
+    return {
+      total: filteredTasks.length,
+      done,
+      overdue,
+      high: filteredTasks.filter(
+        (task) => task.priority === "high" && task.status !== "done"
+      ).length,
+    };
+  }, [filteredTasks]);
+
+  const assigneeOptions = useMemo(() => {
+    const members = activeTab === "team" ? teamMembers : [];
+    return members
+      .filter((member) => member.user && member.user._id)
+      .map((member) => ({ id: member.user._id, name: member.user.name }));
+  }, [teamMembers, activeTab]);
+
+  const boardData = useMemo(() => {
+    const groups = { todo: [], "in-progress": [], review: [], done: [] };
+    filteredTasks.forEach((task) => {
+      if (groups[task.status]) groups[task.status].push(task);
+    });
+    return groups;
+  }, [filteredTasks]);
+
+  const refreshAll = async () => {
+    await Promise.all([
+      selectedTeam
+        ? loadTeamData(selectedTeam, { silent: true })
+        : Promise.resolve(),
+      loadMyTasks({ silent: true }),
+    ]);
+  };
+
+  function changeTab(tab) {
+    setActiveTab(tab);
+    setAssigneeFilter("all");
+    const next = new URLSearchParams(searchParams);
+    if (tab === "my") {
+      next.set("view", "my");
+      next.delete("team");
+    } else {
+      next.delete("view");
+      if (selectedTeam) next.set("team", selectedTeam);
+    }
+    setSearchParams(next, { replace: true });
+  }
+
+  function changeTeam(teamId) {
+    setSelectedTeam(teamId);
+    setAssigneeFilter("all");
+    const next = new URLSearchParams(searchParams);
+    next.set("team", teamId);
+    next.delete("view");
+    setSearchParams(next, { replace: true });
+  }
+
+  function openCreate(status = "todo") {
+    if (!teams.length) {
+      toast.info("Create or join a team before adding tasks");
+      navigate("/teams");
+      return;
+    }
+    const teamId =
+      selectedTeam && teams.some((team) => team._id === selectedTeam)
+        ? selectedTeam
+        : teams[0]._id;
+    setTaskForm(emptyTaskForm(teamId, status));
+    setFormError("");
+    setModal({ type: "create" });
+  }
+
+  function openEdit(task) {
+    setTaskForm({
+      title: task.title,
+      description: task.description || "",
+      status: task.status,
+      priority: task.priority,
+      team: task.team?._id || task.team || selectedTeam,
+      assignedTo: taskAssigneeId(task) || "",
+      dueDate: task.dueDate ? task.dueDate.slice(0, 10) : "",
+      assignmentReason: "",
+    });
+    setFormError("");
+    setModal({ type: "edit", task });
+  }
+
+  function closeModal() {
+    if (savingTask) return;
+    setModal(null);
+    setFormError("");
+  }
+
+  const handleTaskSubmit = async (event) => {
+    event.preventDefault();
+    if (!taskForm.title.trim()) {
+      setFormError("A task title is required");
+      return;
+    }
+    setSavingTask(true);
+    setFormError("");
+    try {
+      if (modal.type === "create") {
+        await api.post("/tasks", {
+          title: taskForm.title.trim(),
+          description: taskForm.description.trim(),
+          status: taskForm.status,
+          priority: taskForm.priority,
+          team: taskForm.team,
+          assignedTo: taskForm.assignedTo || null,
+          dueDate: taskForm.dueDate || null,
+          assignmentReason: taskForm.assignmentReason || undefined,
+        });
+        toast.success("Task created");
+        if (taskForm.team !== selectedTeam) {
+          setSelectedTeam(taskForm.team);
+        }
+      } else {
+        await api.put(`/tasks/${modal.task._id}`, {
+          title: taskForm.title.trim(),
+          description: taskForm.description.trim(),
+          status: taskForm.status,
+          priority: taskForm.priority,
+          dueDate: taskForm.dueDate || null,
+        });
+        toast.success("Task updated");
+      }
+      setModal(null);
+      await refreshAll();
+    } catch (error) {
+      setFormError(getErrorMessage(error, "Could not save the task"));
     } finally {
-      setLoading(false);
+      setSavingTask(false);
     }
   };
 
-  const fetchTeamMembers = async () => {
+  const updateStatus = async (task, status) => {
+    if (!status || task.status === status) return;
+    setTeamTasks((tasks) =>
+      tasks.map((item) => (item._id === task._id ? { ...item, status } : item))
+    );
+    setMyTasks((tasks) =>
+      tasks.map((item) => (item._id === task._id ? { ...item, status } : item))
+    );
     try {
-      const res = await api.get(`/teams/${selectedTeam}`);
-      setTeamMembers(res.data.members || []);
-    } catch (err) {
-      setError("Failed to load team members");
+      await api.put(`/tasks/${task._id}`, { status });
+      toast.success(`Moved to ${STATUS_META[status]?.label || status}`);
+      await refreshAll();
+    } catch (error) {
+      toast.error(getErrorMessage(error, "Could not update the status"));
+      await refreshAll();
     }
   };
 
-  const fetchTasks = async () => {
-    try {
-      const res = await api.get("/tasks", {
-        params: { team: selectedTeam, page: 1, limit: 50 },
-      });
-      setTasks(res.data.tasks || res.data);
-    } catch (err) {
-      setError("Failed to load tasks");
-    }
+  const handleDrop = async (status) => {
+    setDragOver(null);
+    if (!draggedId) return;
+    const task = currentTasks.find((item) => item._id === draggedId);
+    setDraggedId(null);
+    if (task) await updateStatus(task, status);
   };
 
-  const fetchMyTasks = async () => {
-    try {
-      const res = await api.get("/tasks/my-tasks", {
-        params: { page: 1, limit: 50 },
-      });
-      setMyTasks(res.data.tasks || res.data);
-    } catch (err) {
-      console.error("Failed to load my tasks", err);
-    }
-  };
-
-  const handleChange = (e) => {
-    setForm({ ...form, [e.target.name]: e.target.value });
-  };
-
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    try {
-      await api.post("/tasks", {
-        ...form,
-        team: selectedTeam,
-        dueDate: form.dueDate || null,
-        assignedTo: form.assignedTo || null,
-      });
-      setForm({
-        title: "",
-        description: "",
-        status: "todo",
-        priority: "medium",
-        assignedTo: "",
-        dueDate: "",
-        assignmentReason: "",
-      });
-      fetchTasks();
-    } catch (err) {
-      setError(err.response?.data?.message || "Failed to create task");
-    }
-  };
-
-  const handleStatusChange = async (id, newStatus) => {
-    try {
-      await api.put(`/tasks/${id}`, { status: newStatus });
-      fetchTasks();
-      fetchMyTasks();
-    } catch (err) {
-      setError("Failed to update task");
-    }
-  };
-
-  const handleDelete = async (id) => {
-    if (window.confirm("Delete this task?")) {
-      try {
-        await api.delete(`/tasks/${id}`);
-        fetchTasks();
-        fetchMyTasks();
-      } catch (err) {
-        setError("Failed to delete task");
-      }
-    }
-  };
-
-  const openAssignModal = (taskId) => {
-    setAssignTaskId(taskId);
+  const openAssign = async (task) => {
+    setAssignTask(task);
     setAssignForm({ assignedTo: "", reason: "" });
-    setAssignModal(true);
+    setAssignMembers([]);
+    setAssignLoading(true);
+    const teamId = task.team?._id || task.team || selectedTeam;
+    try {
+      const res = await api.get(`/teams/${teamId}`);
+      setAssignMembers(res.data.members || []);
+    } catch (error) {
+      toast.error(getErrorMessage(error, "Could not load team members"));
+    } finally {
+      setAssignLoading(false);
+    }
   };
 
-  const handleAssignSubmit = async (e) => {
-    e.preventDefault();
+  const handleAssign = async (event) => {
+    event.preventDefault();
+    if (!assignForm.assignedTo) return;
+    setAssignSaving(true);
     try {
-      await api.patch(`/tasks/${assignTaskId}/assign`, {
+      await api.patch(`/tasks/${assignTask._id}/assign`, {
         assignedTo: assignForm.assignedTo,
         reason: assignForm.reason || "Task assigned",
       });
-      setAssignModal(false);
-      fetchTasks();
-      fetchMyTasks();
-    } catch (err) {
-      setError(err.response?.data?.message || "Failed to assign task");
+      toast.success("Task assigned");
+      setAssignTask(null);
+      await refreshAll();
+    } catch (error) {
+      toast.error(getErrorMessage(error, "Could not assign the task"));
+    } finally {
+      setAssignSaving(false);
     }
   };
 
-  const handleUnassign = async (taskId) => {
-    if (!window.confirm("Unassign this task?")) return;
+  const handleUnassign = async () => {
+    if (!assignTask) return;
+    setAssignSaving(true);
     try {
-      await api.patch(`/tasks/${taskId}/unassign`, {
+      await api.patch(`/tasks/${assignTask._id}/unassign`, {
         reason: "Task unassigned",
       });
-      fetchTasks();
-      fetchMyTasks();
-    } catch (err) {
-      setError(err.response?.data?.message || "Failed to unassign task");
+      toast.success("Task unassigned");
+      setAssignTask(null);
+      await refreshAll();
+    } catch (error) {
+      toast.error(getErrorMessage(error, "Could not unassign the task"));
+    } finally {
+      setAssignSaving(false);
     }
   };
 
-  const openHistoryModal = (task) => {
+  const openHistory = async (task) => {
     setHistoryTask(task);
-    setHistoryModal(true);
+    setHistoryData(null);
+    setHistoryLoading(true);
+    try {
+      const res = await api.get(`/tasks/${task._id}/assignment-history`);
+      setHistoryData(res.data);
+    } catch (error) {
+      toast.error(getErrorMessage(error, "Could not load assignment history"));
+    } finally {
+      setHistoryLoading(false);
+    }
   };
 
-  if (loading) return <p>Loading...</p>;
-  if (error) return <div className="alert alert-error">{error}</div>;
+  const handleDelete = async () => {
+    if (!deleteTarget) return;
+    setDeleting(true);
+    try {
+      await api.delete(`/tasks/${deleteTarget._id}`);
+      toast.success("Task deleted");
+      setDeleteTarget(null);
+      await refreshAll();
+    } catch (error) {
+      toast.error(getErrorMessage(error, "Could not delete the task"));
+    } finally {
+      setDeleting(false);
+    }
+  };
 
-  const currentTasks = activeTab === "team" ? tasks : myTasks;
+  const teamName = (task) => {
+    if (task.team && typeof task.team === "object") return task.team.name;
+    const found = teams.find((team) => team._id === task.team);
+    return found?.name || "Team";
+  };
 
-  return (
-    <div className="page-container">
-      <div className="page-header">
-        <div>
-          <h1>Tasks</h1>
-          <p style={{ color: "#6b7280", fontSize: "0.95rem" }}>
-            Manage team tasks and assignments
-          </p>
-        </div>
-        <div style={{ display: "flex", gap: "0.5rem" }}>
-          <button
-            className={`btn btn-outline ${activeTab === "team" ? "btn-primary" : ""}`}
-            onClick={() => setActiveTab("team")}
-          >
-            Team Tasks
-          </button>
-          <button
-            className={`btn btn-outline ${activeTab === "my" ? "btn-primary" : ""}`}
-            onClick={() => setActiveTab("my")}
-          >
-            My Tasks
-          </button>
-        </div>
+  const renderActions = (task) => (
+    <div className="task-actions">
+      <button
+        type="button"
+        className="icon-btn icon-btn--sm"
+        title="Assign"
+        aria-label={`Assign ${task.title}`}
+        onClick={() => openAssign(task)}
+      >
+        <Icon name="user" size={15} />
+      </button>
+      <button
+        type="button"
+        className="icon-btn icon-btn--sm"
+        title="Assignment history"
+        aria-label={`History for ${task.title}`}
+        onClick={() => openHistory(task)}
+      >
+        <Icon name="history" size={15} />
+      </button>
+      <button
+        type="button"
+        className="icon-btn icon-btn--sm"
+        title="Edit task"
+        aria-label={`Edit ${task.title}`}
+        onClick={() => openEdit(task)}
+      >
+        <Icon name="edit" size={15} />
+      </button>
+      <button
+        type="button"
+        className="icon-btn icon-btn--sm icon-btn--danger"
+        title="Delete task"
+        aria-label={`Delete ${task.title}`}
+        onClick={() => setDeleteTarget(task)}
+      >
+        <Icon name="trash" size={15} />
+      </button>
+    </div>
+  );
+
+  const renderTaskCard = (task) => (
+    <article
+      key={task._id}
+      className={`task-card ${draggedId === task._id ? "task-card--dragging" : ""}`}
+      draggable
+      onDragStart={(event) => {
+        event.dataTransfer.setData("text/plain", task._id);
+        event.dataTransfer.effectAllowed = "move";
+        setDraggedId(task._id);
+      }}
+      onDragEnd={() => {
+        setDraggedId(null);
+        setDragOver(null);
+      }}
+    >
+      <span className={`priority-bar priority-bar--${task.priority}`} />
+      <div className="task-card-top">
+        <PriorityBadge priority={task.priority} />
+        {renderActions(task)}
       </div>
 
-      {activeTab === "team" && (
-        <>
-          <div className="form-group" style={{ display: "inline-block", marginBottom: "1rem" }}>
-            <label>Team</label>
-            <select
-              value={selectedTeam}
-              onChange={(e) => setSelectedTeam(e.target.value)}
-              className="form-control"
+      <h3 className="task-card-title">{task.title}</h3>
+      {task.description && <p className="task-card-desc">{task.description}</p>}
+
+      <div className="task-tags">
+        {activeTab === "my" && (
+          <span className="tag tag--team">
+            <Icon name="layers" size={12} />
+            {teamName(task)}
+          </span>
+        )}
+        {task.dueDate && (
+          <span className={`tag ${isOverdue(task) ? "tag--danger" : ""}`}>
+            <Icon name="calendar" size={12} />
+            {dueLabel(task.dueDate)}
+          </span>
+        )}
+      </div>
+
+      <div className="task-card-foot">
+        <div className="task-assignee">
+          {taskAssigneeName(task) ? (
+            <>
+              <Avatar name={taskAssigneeName(task)} size="xs" />
+              <span>{taskAssigneeName(task)}</span>
+            </>
+          ) : (
+            <>
+              <span className="avatar avatar--xs avatar--empty">?</span>
+              <span className="muted">Unassigned</span>
+            </>
+          )}
+        </div>
+
+        <select
+          className="task-move-select"
+          value={task.status}
+          onChange={(event) => updateStatus(task, event.target.value)}
+          aria-label={`Change status for ${task.title}`}
+        >
+          {STATUS_OPTIONS.map((option) => (
+            <option key={option.value} value={option.value}>
+              {option.label}
+            </option>
+          ))}
+        </select>
+
+        <span className="drag-hint" title="Drag to change status">
+          <Icon name="grip" size={15} />
+        </span>
+      </div>
+    </article>
+  );
+
+  const hasTeams = teams.length > 0;
+
+  return (
+    <div className="page-stack">
+      <header className="page-header">
+        <div>
+          <span className="eyebrow">Workspace</span>
+          <h1>Task board</h1>
+          <p className="page-subtitle">
+            {activeTab === "my"
+              ? "Everything assigned to you, across every team."
+              : "Drag cards between columns to move work forward."}
+          </p>
+        </div>
+        <div className="page-actions">
+          <div className="view-toggle" role="group" aria-label="View mode">
+            <button
+              type="button"
+              className={view === "board" ? "active" : ""}
+              onClick={() => setView("board")}
+              title="Board view"
             >
-              {teams.map((t) => (
-                <option key={t._id} value={t._id}>
-                  {t.name}
-                </option>
-              ))}
-            </select>
+              <Icon name="board" size={16} />
+              <span>Board</span>
+            </button>
+            <button
+              type="button"
+              className={view === "list" ? "active" : ""}
+              onClick={() => setView("list")}
+              title="List view"
+            >
+              <Icon name="list" size={16} />
+              <span>List</span>
+            </button>
+          </div>
+          <button type="button" className="btn btn-primary" onClick={() => openCreate("todo")}>
+            <Icon name="plus" size={17} />
+            New task
+          </button>
+        </div>
+      </header>
+
+      {!loadingTeams && !hasTeams ? (
+        <div className="panel">
+          <EmptyState
+            icon="users"
+            title="You need a team first"
+            description="Tasks live inside team workspaces. Create a team or join one with an invite code to get started."
+            action={
+              <Link to="/teams" className="btn btn-primary">
+                <Icon name="users" size={16} /> Go to teams
+              </Link>
+            }
+          />
+        </div>
+      ) : (
+        <>
+          <div className="task-toolbar">
+            <div className="tabs" role="tablist" aria-label="Task scope">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={activeTab === "team"}
+                className={`tab ${activeTab === "team" ? "tab--active" : ""}`}
+                onClick={() => changeTab("team")}
+              >
+                <Icon name="users" size={15} />
+                Team tasks
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={activeTab === "my"}
+                className={`tab ${activeTab === "my" ? "tab--active" : ""}`}
+                onClick={() => changeTab("my")}
+              >
+                <Icon name="target" size={15} />
+                My tasks
+                <span className="tab-count">{myTasks.length}</span>
+              </button>
+            </div>
+
+            {activeTab === "team" && (
+              <div className="team-select">
+                <Icon name="layers" size={15} />
+                <select
+                  value={selectedTeam}
+                  onChange={(event) => changeTeam(event.target.value)}
+                  aria-label="Select team"
+                >
+                  {teams.map((team) => (
+                    <option key={team._id} value={team._id}>
+                      {team.name}
+                    </option>
+                  ))}
+                </select>
+                <Icon name="chevronDown" size={15} />
+              </div>
+            )}
+
+            <div className="toolbar-search">
+              <div className="search-box">
+                <Icon name="search" size={16} />
+                <input
+                  type="search"
+                  placeholder="Search tasks…"
+                  value={search}
+                  onChange={(event) => setSearch(event.target.value)}
+                  aria-label="Search tasks"
+                />
+                {search && (
+                  <button
+                    type="button"
+                    className="input-action"
+                    onClick={() => setSearch("")}
+                    aria-label="Clear search"
+                  >
+                    <Icon name="x" size={14} />
+                  </button>
+                )}
+              </div>
+            </div>
+
+            <div className="filter-select">
+              <Icon name="flag" size={15} />
+              <select
+                value={priorityFilter}
+                onChange={(event) => setPriorityFilter(event.target.value)}
+                aria-label="Filter by priority"
+              >
+                <option value="all">All priorities</option>
+                <option value="high">High</option>
+                <option value="medium">Medium</option>
+                <option value="low">Low</option>
+              </select>
+              <Icon name="chevronDown" size={14} />
+            </div>
+
+            {activeTab === "team" && (
+              <div className="filter-select">
+                <Icon name="user" size={15} />
+                <select
+                  value={assigneeFilter}
+                  onChange={(event) => setAssigneeFilter(event.target.value)}
+                  aria-label="Filter by assignee"
+                >
+                  <option value="all">Everyone</option>
+                  <option value="unassigned">Unassigned</option>
+                  {assigneeOptions.map((option) => (
+                    <option key={option.id} value={option.id}>
+                      {option.name}
+                    </option>
+                  ))}
+                </select>
+                <Icon name="chevronDown" size={14} />
+              </div>
+            )}
           </div>
 
-          <div className="card" style={{ marginBottom: "1.5rem" }}>
-            <div className="card-header">
-              <h3>Create New Task</h3>
-            </div>
-            <div className="card-body">
-              <form onSubmit={handleSubmit} className="auth-form">
-                <div className="form-row">
-                  <div className="form-group">
-                    <label>Title</label>
-                    <input
-                      type="text"
-                      name="title"
-                      value={form.title}
-                      onChange={handleChange}
-                      required
-                    />
-                  </div>
-                  <div className="form-group">
-                    <label>Status</label>
-                    <select name="status" value={form.status} onChange={handleChange}>
-                      <option value="todo">To Do</option>
-                      <option value="in-progress">In Progress</option>
-                      <option value="review">Review</option>
-                      <option value="done">Done</option>
-                    </select>
-                  </div>
-                </div>
-                <div className="form-group">
-                  <label>Description</label>
-                  <input
-                    type="text"
-                    name="description"
-                    value={form.description}
-                    onChange={handleChange}
-                  />
-                </div>
-                <div className="form-row">
-                  <div className="form-group">
-                    <label>Priority</label>
-                    <select name="priority" value={form.priority} onChange={handleChange}>
-                      <option value="low">Low</option>
-                      <option value="medium">Medium</option>
-                      <option value="high">High</option>
-                    </select>
-                  </div>
-                  <div className="form-group">
-                    <label>Assign To</label>
-                    <select
-                      name="assignedTo"
-                      value={form.assignedTo}
-                      onChange={handleChange}
-                    >
-                      <option value="">Unassigned</option>
-                      {teamMembers
-                        .filter((m) => m.user._id.toString() !== "null")
-                        .map((m) => (
-                          <option key={m.user._id} value={m.user._id}>
-                            {m.user.name} ({m.role})
-                          </option>
-                        ))}
-                    </select>
-                  </div>
-                  <div className="form-group">
-                    <label>Due Date</label>
-                    <input type="date" name="dueDate" value={form.dueDate} onChange={handleChange} />
-                  </div>
-                </div>
-                <div className="form-group">
-                  <label>Assignment Reason</label>
-                  <input
-                    type="text"
-                    name="assignmentReason"
-                    value={form.assignmentReason}
-                    onChange={handleChange}
-                    placeholder="Why is this task being assigned?"
-                  />
-                </div>
-                <button type="submit" className="btn btn-primary">
-                  Create Task
-                </button>
-              </form>
-            </div>
+          <div className="summary-strip">
+            <span>
+              <strong>{summary.total}</strong> tasks
+            </span>
+            <span>
+              <i className="dot dot--done" />
+              <strong>{summary.done}</strong> done
+            </span>
+            <span className={summary.overdue ? "text-danger" : ""}>
+              <i className="dot dot--danger" />
+              <strong>{summary.overdue}</strong> overdue
+            </span>
+            <span>
+              <i className="dot dot--high" />
+              <strong>{summary.high}</strong> high priority open
+            </span>
           </div>
+
+          {loadingTasks && activeTab === "team" ? (
+            <Loader label="Loading tasks" />
+          ) : filteredTasks.length === 0 ? (
+            <div className="panel">
+              <EmptyState
+                icon={currentTasks.length ? "search" : "board"}
+                title={
+                  currentTasks.length
+                    ? "No tasks match your filters"
+                    : activeTab === "my"
+                    ? "Nothing assigned to you yet"
+                    : "This team has no tasks yet"
+                }
+                description={
+                  currentTasks.length
+                    ? "Try clearing the search or choosing a different priority."
+                    : activeTab === "my"
+                    ? "When a teammate assigns you work, it will appear here."
+                    : "Create the first task and start moving work forward."
+                }
+                action={
+                  currentTasks.length ? (
+                    <button
+                      type="button"
+                      className="btn btn-secondary"
+                      onClick={() => {
+                        setSearch("");
+                        setPriorityFilter("all");
+                        setAssigneeFilter("all");
+                      }}
+                    >
+                      Clear filters
+                    </button>
+                  ) : activeTab === "team" ? (
+                    <button
+                      type="button"
+                      className="btn btn-primary"
+                      onClick={() => openCreate("todo")}
+                    >
+                      <Icon name="plus" size={16} /> Create task
+                    </button>
+                  ) : (
+                    <Link to="/tasks" className="btn btn-secondary">
+                      Browse team tasks
+                    </Link>
+                  )
+                }
+              />
+            </div>
+          ) : view === "board" ? (
+            <div className="board">
+              {COLUMNS.map((status) => (
+                <section
+                  className={`board-col board-col--${status} ${
+                    dragOver === status ? "board-col--over" : ""
+                  }`}
+                  key={status}
+                  onDragOver={(event) => {
+                    event.preventDefault();
+                    setDragOver(status);
+                  }}
+                  onDragLeave={() => setDragOver((current) => (current === status ? null : current))}
+                  onDrop={() => handleDrop(status)}
+                >
+                  <header className="board-col-head">
+                    <span className={`dot dot--${status}`} />
+                    <h2>{STATUS_META[status].label}</h2>
+                    <span className="col-count">{boardData[status].length}</span>
+                    <button
+                      type="button"
+                      className="icon-btn icon-btn--sm col-add"
+                      onClick={() => openCreate(status)}
+                      title={`Add a ${STATUS_META[status].label.toLowerCase()} task`}
+                      aria-label={`Add task to ${STATUS_META[status].label}`}
+                    >
+                      <Icon name="plus" size={15} />
+                    </button>
+                  </header>
+
+                  <div className="board-cards">
+                    {boardData[status].map((task) => renderTaskCard(task))}
+                    {boardData[status].length === 0 && (
+                      <div className="board-empty">
+                        <span>Drop tasks here</span>
+                      </div>
+                    )}
+                  </div>
+                </section>
+              ))}
+            </div>
+          ) : (
+            <div className="panel list-panel">
+              <div className="task-list-head">
+                <span>Task</span>
+                <span>Status</span>
+                <span>Priority</span>
+                <span>Assignee</span>
+                <span>Due</span>
+                <span aria-hidden="true" />
+              </div>
+              <ul className="task-list">
+                {filteredTasks.map((task) => (
+                  <li className="task-row" key={task._id}>
+                    <div className="task-row-main">
+                      <button
+                        type="button"
+                        className={`check-toggle ${
+                          task.status === "done" ? "check-toggle--on" : ""
+                        }`}
+                        onClick={() =>
+                          updateStatus(task, task.status === "done" ? "todo" : "done")
+                        }
+                        aria-label={`Toggle ${task.title}`}
+                      >
+                        {task.status === "done" && (
+                          <Icon name="check" size={12} strokeWidth={2.6} />
+                        )}
+                      </button>
+                      <div>
+                        <span
+                          className={`task-row-title ${
+                            task.status === "done" ? "task-row-title--done" : ""
+                          }`}
+                        >
+                          {task.title}
+                        </span>
+                        <span className="task-row-sub">
+                          {activeTab === "my" ? teamName(task) : task.description || "No description"}
+                        </span>
+                      </div>
+                    </div>
+                    <div className="task-row-status">
+                      <StatusBadge status={task.status} />
+                    </div>
+                    <div>
+                      <PriorityBadge priority={task.priority} />
+                    </div>
+                    <div className="task-row-assignee">
+                      {taskAssigneeName(task) ? (
+                        <>
+                          <Avatar name={taskAssigneeName(task)} size="xs" />
+                          <span>{taskAssigneeName(task)}</span>
+                        </>
+                      ) : (
+                        <span className="muted">Unassigned</span>
+                      )}
+                    </div>
+                    <div className={`task-row-due ${isOverdue(task) ? "text-danger" : ""}`}>
+                      {task.dueDate ? dueLabel(task.dueDate) : "—"}
+                    </div>
+                    <div className="task-row-actions">{renderActions(task)}</div>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
         </>
       )}
 
-      <div className="card">
-        <div className="card-header">
-          <h3>
-            {activeTab === "team" ? "Team Task List" : "My Assigned Tasks"}
-          </h3>
-        </div>
-        <div className="card-body">
-          {currentTasks.length === 0 ? (
-            <div className="empty-state">
-              <h3>No tasks</h3>
-              <p>
-                {activeTab === "team"
-                  ? "Create your first task above."
-                  : "You have no tasks assigned to you."}
-              </p>
-            </div>
-          ) : (
-            <div className="task-list">
-              {currentTasks.map((task) => {
-                const isAssignedToMe =
-                  task.assignedTo &&
-                  (typeof task.assignedTo === "object"
-                    ? task.assignedTo._id
-                    : task.assignedTo) === (JSON.parse(localStorage.getItem("user") || "{}") || {})._id;
-                return (
-                  <div key={task._id} className="task-item">
-                    <input
-                      type="checkbox"
-                      checked={task.status === "done"}
-                      onChange={() =>
-                        handleStatusChange(
-                          task._id,
-                          task.status === "done" ? "todo" : "done"
-                        )
-                      }
-                    />
-                    <div className="task-content">
-                      <div className={`task-title ${task.status === "done" ? "done" : ""}`}>
-                        {task.title}
-                        {task.assignedTo && (
-                          <span
-                            className="badge"
-                            style={{
-                              background: "#e5e7eb",
-                              color: "#374151",
-                              textTransform: "none",
-                              fontSize: "0.7rem",
-                              marginLeft: "0.5rem",
-                            }}
-                          >
-                            Assigned
-                          </span>
-                        )}
-                      </div>
-                      {task.description && (
-                        <div
-                          className="task-meta"
-                          style={{ color: "#6b7280", fontSize: "0.85rem" }}
-                        >
-                          {task.description}
-                        </div>
-                      )}
-                      <div className="task-meta">
-                        <span className={`badge badge-${task.priority}`}>
-                          {task.priority}
-                        </span>
-                        <span className={`badge badge-${task.status}`}>
-                          {task.status}
-                        </span>
-                        {task.assignedTo &&
-                          (typeof task.assignedTo === "object"
-                            ? task.assignedTo.name
-                            : "") && (
-                            <span>
-                              👤 {typeof task.assignedTo === "object" ? task.assignedTo.name : ""}
-                            </span>
-                          )}
-                        {task.dueDate && (
-                          <span>📅 {new Date(task.dueDate).toLocaleDateString()}</span>
-                        )}
-                      </div>
-                    </div>
-                    <div className="task-actions">
-                      {activeTab === "team" ? (
-                        <>
-                          <button
-                            className="btn btn-outline btn-sm"
-                            onClick={() => openAssignModal(task._id)}
-                          >
-                            Assign
-                          </button>
-                          {task.assignedTo && (
-                            <button
-                              className="btn btn-outline btn-sm"
-                              onClick={() => handleUnassign(task._id)}
-                            >
-                              Unassign
-                            </button>
-                          )}
-                          <button
-                            className="btn btn-outline btn-sm"
-                            onClick={() => openHistoryModal(task)}
-                          >
-                            History
-                          </button>
-                          <button
-                            className="btn btn-danger btn-sm"
-                            onClick={() => handleDelete(task._id)}
-                          >
-                            Delete
-                          </button>
-                        </>
-                      ) : (
-                        <>
-                          <button
-                            className="btn btn-outline btn-sm"
-                            onClick={() => openHistoryModal(task)}
-                          >
-                            History
-                          </button>
-                        </>
-                      )}
-                    </div>
-                  </div>
-                );
-              })}
+      <Modal
+        open={modal?.type === "create" || modal?.type === "edit"}
+        onClose={closeModal}
+        title={modal?.type === "edit" ? "Edit task" : "Create a task"}
+        subtitle={
+          modal?.type === "edit"
+            ? "Update the details or move the task to another status."
+            : "Add work to a team board and assign an owner."
+        }
+        icon={modal?.type === "edit" ? "edit" : "plus"}
+        size="lg"
+        footer={
+          <>
+            <button type="button" className="btn btn-secondary" onClick={closeModal}>
+              Cancel
+            </button>
+            <button
+              type="submit"
+              form="task-form"
+              className="btn btn-primary"
+              disabled={savingTask}
+            >
+              {savingTask ? (
+                <>
+                  <span className="spinner spinner--light" aria-hidden="true" />
+                  Saving…
+                </>
+              ) : (
+                <>
+                  <Icon name="check" size={16} />
+                  {modal?.type === "edit" ? "Save changes" : "Create task"}
+                </>
+              )}
+            </button>
+          </>
+        }
+      >
+        <form id="task-form" className="form-stack" onSubmit={handleTaskSubmit}>
+          {formError && (
+            <div className="alert alert--error">
+              <Icon name="alert" size={16} />
+              <span>{formError}</span>
             </div>
           )}
-        </div>
-      </div>
 
-      {/* Assign Modal */}
-      {assignModal && (
-        <div className="modal-overlay" onClick={() => setAssignModal(false)}>
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <h3>Assign Task</h3>
-            <form onSubmit={handleAssignSubmit} className="auth-form">
-              <div className="form-group">
-                <label>Assign To</label>
+          <div className="form-field">
+            <label htmlFor="task-title">Title</label>
+            <input
+              id="task-title"
+              className="input"
+              value={taskForm.title}
+              onChange={(event) => setTaskForm({ ...taskForm, title: event.target.value })}
+              placeholder="What needs to be done?"
+              maxLength={120}
+              autoFocus
+              required
+            />
+          </div>
+
+          <div className="form-field">
+            <label htmlFor="task-description">Description</label>
+            <textarea
+              id="task-description"
+              className="input textarea"
+              rows={3}
+              value={taskForm.description}
+              onChange={(event) =>
+                setTaskForm({ ...taskForm, description: event.target.value })
+              }
+              placeholder="Add context, acceptance criteria or links…"
+              maxLength={500}
+            />
+          </div>
+
+          {modal?.type === "create" && (
+            <div className="form-row">
+              <div className="form-field">
+                <label htmlFor="task-team">Team</label>
                 <select
-                  name="assignedTo"
-                  value={assignForm.assignedTo}
-                  onChange={(e) => setAssignForm({ ...assignForm, assignedTo: e.target.value })}
-                  required
+                  id="task-team"
+                  className="input"
+                  value={taskForm.team}
+                  onChange={(event) =>
+                    setTaskForm({
+                      ...taskForm,
+                      team: event.target.value,
+                      assignedTo: "",
+                    })
+                  }
                 >
-                  <option value="">Select team member</option>
-                  {teamMembers.map((m) => (
-                    <option key={m.user._id} value={m.user._id}>
-                      {m.user.name} ({m.role})
+                  {teams.map((team) => (
+                    <option key={team._id} value={team._id}>
+                      {team.name}
                     </option>
                   ))}
                 </select>
               </div>
-              <div className="form-group">
-                <label>Reason</label>
-                <input
-                  type="text"
-                  name="reason"
-                  value={assignForm.reason}
-                  onChange={(e) => setAssignForm({ ...assignForm, reason: e.target.value })}
-                  placeholder="Why are you assigning this task?"
-                />
+              <div className="form-field">
+                <label htmlFor="task-assignee">Assign to</label>
+                <select
+                  id="task-assignee"
+                  className="input"
+                  value={taskForm.assignedTo}
+                  onChange={(event) =>
+                    setTaskForm({ ...taskForm, assignedTo: event.target.value })
+                  }
+                >
+                  <option value="">Unassigned</option>
+                  {createMembers.map((member) =>
+                    member.user ? (
+                      <option key={member.user._id} value={member.user._id}>
+                        {member.user.name} ({member.role})
+                      </option>
+                    ) : null
+                  )}
+                </select>
               </div>
-              <div style={{ display: "flex", gap: "0.5rem", marginTop: "1rem" }}>
-                <button type="button" className="btn btn-outline" onClick={() => setAssignModal(false)}>
-                  Cancel
-                </button>
-                <button type="submit" className="btn btn-primary">
-                  Assign
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
+            </div>
+          )}
 
-      {/* Assignment History Modal */}
-      {historyModal && historyTask && (
-        <div className="modal-overlay" onClick={() => setHistoryModal(false)}>
-          <div className="modal" style={{ maxWidth: "600px", width: "90%" }} onClick={(e) => e.stopPropagation()}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1rem" }}>
-              <h3>Assignment History</h3>
-              <button className="btn btn-outline btn-sm" onClick={() => setHistoryModal(false)}>
-                Close
-              </button>
+          <div className="form-row">
+            <div className="form-field">
+              <label htmlFor="task-status">Status</label>
+              <select
+                id="task-status"
+                className="input"
+                value={taskForm.status}
+                onChange={(event) =>
+                  setTaskForm({ ...taskForm, status: event.target.value })
+                }
+              >
+                {STATUS_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
             </div>
-            <div style={{ marginBottom: "1rem" }}>
-              <strong>Task:</strong> {historyTask.title}
+            <div className="form-field">
+              <label htmlFor="task-priority">Priority</label>
+              <select
+                id="task-priority"
+                className="input"
+                value={taskForm.priority}
+                onChange={(event) =>
+                  setTaskForm({ ...taskForm, priority: event.target.value })
+                }
+              >
+                <option value="low">Low</option>
+                <option value="medium">Medium</option>
+                <option value="high">High</option>
+              </select>
             </div>
-            <div style={{ marginBottom: "1rem" }}>
-              <strong>Current Assignee:</strong>{" "}
-              {historyTask.assignedTo
-                ? (typeof historyTask.assignedTo === "object"
-                    ? historyTask.assignedTo.name
-                    : historyTask.assignedTo)
-                : "Unassigned"}
-            </div>
-            <div>
-              <strong>History:</strong>
-              {historyTask.history &&
-              historyTask.history.length > 0 ? (
-                <div className="task-list">
-                  {historyTask.history.map((h, i) => (
-                    <div key={i} className="task-item" style={{ background: "#f9fafb" }}>
-                      <div className="task-content">
-                        <div className="task-title">
-                          {h.assignedTo
-                            ? `Assigned to ${typeof h.assignedTo === "object" ? h.assignedTo.name : "Unknown"}`
-                            : "Unassigned"}
-                        </div>
-                        <div className="task-meta">
-                          <span>
-                            By {typeof h.assignedBy === "object" ? h.assignedBy.name : "System"}
-                          </span>
-                          <span>
-                            {new Date(h.assignedAt).toLocaleString()}
-                          </span>
-                          {h.reason && <span>{h.reason}</span>}
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <p>No assignment history.</p>
-              )}
+            <div className="form-field">
+              <label htmlFor="task-due">Due date</label>
+              <input
+                id="task-due"
+                type="date"
+                className="input"
+                value={taskForm.dueDate}
+                onChange={(event) =>
+                  setTaskForm({ ...taskForm, dueDate: event.target.value })
+                }
+              />
             </div>
           </div>
+
+          {modal?.type === "create" && taskForm.assignedTo && (
+            <div className="form-field">
+              <label htmlFor="task-reason">Assignment reason</label>
+              <input
+                id="task-reason"
+                className="input"
+                value={taskForm.assignmentReason}
+                onChange={(event) =>
+                  setTaskForm({ ...taskForm, assignmentReason: event.target.value })
+                }
+                placeholder="Why is this person the right owner?"
+                maxLength={160}
+              />
+              <span className="field-hint">
+                Saved to the task&apos;s assignment history for future reference.
+              </span>
+            </div>
+          )}
+        </form>
+      </Modal>
+
+      <Modal
+        open={Boolean(assignTask)}
+        onClose={() => (assignSaving ? null : setAssignTask(null))}
+        title="Assign task"
+        subtitle={assignTask?.title}
+        icon="user"
+        footer={
+          <>
+            <button
+              type="button"
+              className="btn btn-secondary"
+              onClick={() => setAssignTask(null)}
+              disabled={assignSaving}
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              form="assign-form"
+              className="btn btn-primary"
+              disabled={assignSaving || !assignForm.assignedTo}
+            >
+              {assignSaving ? "Assigning…" : "Assign task"}
+            </button>
+          </>
+        }
+      >
+        {assignLoading ? (
+          <Loader label="Loading team members" />
+        ) : (
+          <form id="assign-form" className="form-stack" onSubmit={handleAssign}>
+            <div className="form-field">
+              <label htmlFor="assign-member">Assign to</label>
+              <select
+                id="assign-member"
+                className="input"
+                value={assignForm.assignedTo}
+                onChange={(event) =>
+                  setAssignForm({ ...assignForm, assignedTo: event.target.value })
+                }
+                required
+              >
+                <option value="">Select a team member</option>
+                {assignMembers.map((member) =>
+                  member.user ? (
+                    <option key={member.user._id} value={member.user._id}>
+                      {member.user.name} ({member.role})
+                    </option>
+                  ) : null
+                )}
+              </select>
+            </div>
+
+            <div className="form-field">
+              <label htmlFor="assign-reason">Reason</label>
+              <input
+                id="assign-reason"
+                className="input"
+                value={assignForm.reason}
+                onChange={(event) =>
+                  setAssignForm({ ...assignForm, reason: event.target.value })
+                }
+                placeholder="Why are you assigning this task?"
+                maxLength={160}
+              />
+            </div>
+
+            {assignTask?.assignedTo && (
+              <div className="assign-current">
+                <div>
+                  <span className="field-hint">Currently assigned to</span>
+                  <strong>{taskAssigneeName(assignTask)}</strong>
+                </div>
+                <button
+                  type="button"
+                  className="btn btn-danger-ghost btn-sm"
+                  onClick={handleUnassign}
+                  disabled={assignSaving}
+                >
+                  <Icon name="x" size={14} /> Unassign
+                </button>
+              </div>
+            )}
+
+            <div className="info-note">
+              <Icon name="history" size={16} />
+              <span>Every assignment is recorded with the reason and timestamp.</span>
+            </div>
+          </form>
+        )}
+      </Modal>
+
+      <Modal
+        open={Boolean(historyTask)}
+        onClose={() => setHistoryTask(null)}
+        title="Assignment history"
+        subtitle={historyTask?.title}
+        icon="history"
+        size="md"
+      >
+        {historyLoading ? (
+          <Loader label="Loading history" />
+        ) : !historyData?.history?.length ? (
+          <EmptyState
+            compact
+            icon="history"
+            title="No assignment changes yet"
+            description="Assign this task to create the first history entry."
+          />
+        ) : (
+          <ol className="history-list">
+            {historyData.history.map((entry, index) => {
+              const assignee = entry.assignedTo?.name;
+              return (
+                <li className="history-item" key={`${entry.assignedAt}-${index}`}>
+                  <span className={`history-dot ${assignee ? "" : "history-dot--empty"}`}>
+                    <Icon name={assignee ? "user" : "x"} size={13} />
+                  </span>
+                  <div className="history-body">
+                    <div className="history-title">
+                      {assignee ? (
+                        <>
+                          Assigned to <strong>{assignee}</strong>
+                        </>
+                      ) : (
+                        <strong>Unassigned</strong>
+                      )}
+                    </div>
+                    {entry.reason && <p className="history-reason">{entry.reason}</p>}
+                    <div className="history-meta">
+                      <span>
+                        <Icon name="user" size={12} />
+                        {entry.assignedBy?.name || "System"}
+                      </span>
+                      <span>
+                        <Icon name="clock" size={12} />
+                        {formatDateTime(entry.assignedAt)}
+                      </span>
+                    </div>
+                  </div>
+                </li>
+              );
+            })}
+          </ol>
+        )}
+      </Modal>
+
+      <Modal
+        open={Boolean(deleteTarget)}
+        onClose={() => (deleting ? null : setDeleteTarget(null))}
+        title="Delete this task?"
+        subtitle={deleteTarget?.title}
+        icon="alert"
+        size="sm"
+        footer={
+          <>
+            <button
+              type="button"
+              className="btn btn-secondary"
+              onClick={() => setDeleteTarget(null)}
+              disabled={deleting}
+            >
+              Keep task
+            </button>
+            <button
+              type="button"
+              className="btn btn-danger"
+              onClick={handleDelete}
+              disabled={deleting}
+            >
+              {deleting ? "Deleting…" : "Delete task"}
+            </button>
+          </>
+        }
+      >
+        <div className="danger-note">
+          <Icon name="alert" size={17} />
+          <p>
+            This permanently removes <strong>{deleteTarget?.title}</strong> and
+            its assignment history. This cannot be undone.
+          </p>
         </div>
-      )}
+      </Modal>
     </div>
   );
 }

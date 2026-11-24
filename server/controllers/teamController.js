@@ -1,6 +1,6 @@
 const asyncHandler = require("express-async-handler");
 const Team = require("../models/Team");
-const User = require("../models/User");
+const Task = require("../models/Task");
 
 // @desc    Get all teams for user
 // @route   GET /api/teams
@@ -8,7 +8,10 @@ const User = require("../models/User");
 const getTeams = asyncHandler(async (req, res) => {
   const teams = await Team.find({
     "members.user": req.user.id,
-  }).populate("owner members.user", "name email");
+  })
+    .populate("owner members.user", "name email")
+    .sort({ createdAt: -1 });
+
   res.json(teams);
 });
 
@@ -18,14 +21,24 @@ const getTeams = asyncHandler(async (req, res) => {
 const createTeam = asyncHandler(async (req, res) => {
   const { name, description } = req.body;
 
+  if (!name || !name.trim()) {
+    res.status(400);
+    throw new Error("Please add a team name");
+  }
+
   const team = await Team.create({
-    name,
-    description,
+    name: name.trim(),
+    description: description?.trim() || "",
     owner: req.user.id,
     members: [{ user: req.user.id, role: "admin" }],
   });
 
-  res.status(201).json(team);
+  const populated = await Team.findById(team._id).populate(
+    "owner members.user",
+    "name email"
+  );
+
+  res.status(201).json(populated);
 });
 
 // @desc    Get team by ID
@@ -43,7 +56,7 @@ const getTeamById = asyncHandler(async (req, res) => {
   }
 
   const isMember = team.members.some(
-    (m) => m.user._id.toString() === req.user.id
+    (m) => m.user && m.user._id.toString() === req.user.id
   );
   if (!isMember) {
     res.status(403);
@@ -59,7 +72,14 @@ const getTeamById = asyncHandler(async (req, res) => {
 const joinTeam = asyncHandler(async (req, res) => {
   const { inviteCode } = req.body;
 
-  const team = await Team.findOne({ inviteCode });
+  if (!inviteCode) {
+    res.status(400);
+    throw new Error("Please provide an invite code");
+  }
+
+  const team = await Team.findOne({
+    inviteCode: inviteCode.toString().trim().toUpperCase(),
+  });
   if (!team) {
     res.status(404);
     throw new Error("Invalid invite code");
@@ -70,7 +90,7 @@ const joinTeam = asyncHandler(async (req, res) => {
   );
   if (alreadyMember) {
     res.status(400);
-    throw new Error("Already a member of this team");
+    throw new Error("You are already a member of this team");
   }
 
   team.members.push({ user: req.user.id, role: "member" });
@@ -96,12 +116,22 @@ const updateTeam = asyncHandler(async (req, res) => {
 
   if (team.owner.toString() !== req.user.id) {
     res.status(403);
-    throw new Error("Not authorized to update this team");
+    throw new Error("Only the team owner can update this team");
   }
 
-  const updatedTeam = await Team.findByIdAndUpdate(req.params.id, req.body, {
-    new: true,
-  }).populate("owner members.user", "name email");
+  if (typeof req.body.name === "string" && req.body.name.trim()) {
+    team.name = req.body.name.trim();
+  }
+  if (typeof req.body.description === "string") {
+    team.description = req.body.description.trim();
+  }
+
+  await team.save();
+
+  const updatedTeam = await Team.findById(team._id).populate(
+    "owner members.user",
+    "name email"
+  );
 
   res.json(updatedTeam);
 });
@@ -119,11 +149,14 @@ const deleteTeam = asyncHandler(async (req, res) => {
 
   if (team.owner.toString() !== req.user.id) {
     res.status(403);
-    throw new Error("Not authorized to delete this team");
+    throw new Error("Only the team owner can delete this team");
   }
 
+  // Remove all tasks that belong to this team
+  await Task.deleteMany({ team: team._id });
   await team.deleteOne();
-  res.json({ message: "Team removed" });
+
+  res.json({ message: "Team removed", _id: req.params.id });
 });
 
 module.exports = {

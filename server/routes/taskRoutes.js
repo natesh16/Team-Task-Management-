@@ -9,12 +9,14 @@ const {
   unassignTask,
   getAssignmentHistory,
   getMyTasks,
+  getTaskStats,
 } = require("../controllers/taskController");
 
 const router = express.Router();
 
 router.route("/").get(protect, getTasks).post(protect, createTask);
 router.route("/my-tasks").get(protect, getMyTasks);
+router.route("/stats").get(protect, getTaskStats);
 router.route("/:id/assign").patch(protect, assignTask);
 router.route("/:id/unassign").patch(protect, unassignTask);
 router

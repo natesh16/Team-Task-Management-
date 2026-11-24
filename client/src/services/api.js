@@ -2,6 +2,7 @@ import axios from "axios";
 
 const api = axios.create({
   baseURL: "/api",
+  timeout: 20000,
 });
 
 api.interceptors.request.use(
@@ -18,10 +19,17 @@ api.interceptors.request.use(
 api.interceptors.response.use(
   (response) => response,
   (error) => {
-    if (error.response && error.response.status === 401) {
+    const status = error.response?.status;
+    const url = error.config?.url || "";
+    const isAuthRequest =
+      url.includes("/auth/login") || url.includes("/auth/register");
+
+    if (status === 401 && !isAuthRequest) {
       localStorage.removeItem("token");
       localStorage.removeItem("user");
-      window.location.href = "/login";
+      if (!window.location.pathname.startsWith("/login")) {
+        window.location.assign("/login");
+      }
     }
     return Promise.reject(error);
   }
