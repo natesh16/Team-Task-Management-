@@ -166,10 +166,11 @@
 
 .board {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(220px, 1fr));
   gap: 0.85rem;
   align-items: start;
   padding-bottom: 0.5rem;
+  overflow-x: auto;
 }
 
 .board-col {

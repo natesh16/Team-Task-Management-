@@ -2,6 +2,7 @@ import React from "react";
 import Icon from "./Icon";
 
 export const STATUS_META = {
+  backlog: { label: "Backlog", tone: "neutral", icon: "layers" },
   todo: { label: "To do", tone: "todo", icon: "clipboard" },
   "in-progress": { label: "In progress", tone: "progress", icon: "clock" },
   review: { label: "In review", tone: "review", icon: "eye" },

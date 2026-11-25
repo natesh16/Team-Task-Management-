@@ -8,6 +8,8 @@ import Modal from "../components/Modal";
 import EmptyState from "../components/EmptyState";
 import { StatusBadge, PriorityBadge, STATUS_META } from "../components/Badge";
 import Loader from "../components/Loader";
+import TaskDetailModal from "../components/TaskDetailModal";
+import AiPlannerModal from "../components/AiPlannerModal";
 import { useToast } from "../components/Toast";
 import {
   dueLabel,
@@ -18,8 +20,9 @@ import {
   taskAssigneeName,
 } from "../utils/format";
 
-const COLUMNS = ["todo", "in-progress", "review", "done"];
+const COLUMNS = ["backlog", "todo", "in-progress", "review", "done"];
 const STATUS_OPTIONS = [
+  { value: "backlog", label: "Backlog" },
   { value: "todo", label: "To do" },
   { value: "in-progress", label: "In progress" },
   { value: "review", label: "In review" },
@@ -81,6 +84,15 @@ export default function Tasks() {
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [deleting, setDeleting] = useState(false);
 
+  const [teamColumns, setTeamColumns] = useState([]);
+  const [boards, setBoards] = useState([]);
+  const [selectedBoard, setSelectedBoard] = useState("");
+  const [boardModalOpen, setBoardModalOpen] = useState(false);
+  const [newBoardForm, setNewBoardForm] = useState({ name: "", description: "" });
+  const [creatingBoard, setCreatingBoard] = useState(false);
+  const [detailTask, setDetailTask] = useState(null);
+  const [aiOpen, setAiOpen] = useState(false);
+
   const [draggedId, setDraggedId] = useState(null);
   const [dragOver, setDragOver] = useState(null);
 
@@ -120,21 +132,43 @@ export default function Tasks() {
     }
   }
 
-  async function loadTeamData(teamId, { silent = false } = {}) {
+  async function loadTeamData(teamId, { silent = false, boardId = null } = {}) {
     if (!teamId) {
       setTeamTasks([]);
       setTeamMembers([]);
+      setBoards([]);
+      setSelectedBoard("");
       setLoadingTasks(false);
       return;
     }
     if (!silent) setLoadingTasks(true);
     try {
-      const [tasksRes, teamRes] = await Promise.all([
-        api.get("/tasks", { params: { team: teamId, page: 1, limit: 200 } }),
+      const [boardsRes, teamRes] = await Promise.all([
+        api.get("/boards", { params: { team: teamId } }),
         api.get(`/teams/${teamId}`),
       ]);
-      setTeamTasks(tasksRes.data.tasks || tasksRes.data || []);
+      const boardList = boardsRes.data || [];
+      setBoards(boardList);
+      const targetBoardId =
+        boardId && boardList.some((b) => b._id === boardId)
+          ? boardId
+          : selectedBoard && boardList.some((b) => b._id === selectedBoard)
+          ? selectedBoard
+          : boardList[0]?._id || "";
+      setSelectedBoard(targetBoardId);
       setTeamMembers(teamRes.data.members || []);
+      const activeBoardObj = boardList.find((b) => b._id === targetBoardId);
+      setTeamColumns(activeBoardObj?.columns || teamRes.data.columns || []);
+
+      const tasksRes = await api.get("/tasks", {
+        params: {
+          team: teamId,
+          board: targetBoardId || undefined,
+          page: 1,
+          limit: 200,
+        },
+      });
+      setTeamTasks(tasksRes.data.tasks || tasksRes.data || []);
     } catch (error) {
       if (!silent) toast.error(getErrorMessage(error, "Failed to load tasks"));
     } finally {
@@ -191,6 +225,22 @@ export default function Tasks() {
     };
   }, [modal?.type, taskForm.team]);
 
+  const activeTeamObj = useMemo(
+    () => teams.find((t) => t._id === selectedTeam) || null,
+    [teams, selectedTeam]
+  );
+
+  const isTeamAdmin = useMemo(() => {
+    if (!activeTeamObj || !user) return false;
+    if (user.role === "admin") return true;
+    const ownerId = activeTeamObj.owner?._id || activeTeamObj.owner;
+    if (ownerId === user._id) return true;
+    const membership = (activeTeamObj.members || []).find(
+      (m) => (m.user?._id || m.user) === user._id
+    );
+    return membership?.role === "admin";
+  }, [activeTeamObj, user]);
+
   const currentTasks = activeTab === "team" ? teamTasks : myTasks;
 
   const filteredTasks = useMemo(() => {
@@ -238,7 +288,13 @@ export default function Tasks() {
   }, [teamMembers, activeTab]);
 
   const boardData = useMemo(() => {
-    const groups = { todo: [], "in-progress": [], review: [], done: [] };
+    const groups = {
+      backlog: [],
+      todo: [],
+      "in-progress": [],
+      review: [],
+      done: [],
+    };
     filteredTasks.forEach((task) => {
       if (groups[task.status]) groups[task.status].push(task);
     });
@@ -248,10 +304,48 @@ export default function Tasks() {
   const refreshAll = async () => {
     await Promise.all([
       selectedTeam
-        ? loadTeamData(selectedTeam, { silent: true })
+        ? loadTeamData(selectedTeam, { silent: true, boardId: selectedBoard })
         : Promise.resolve(),
       loadMyTasks({ silent: true }),
     ]);
+  };
+
+  function changeBoard(boardId) {
+    setSelectedBoard(boardId);
+    loadTeamData(selectedTeam, { boardId });
+  }
+
+  const handleCreateBoard = async (event) => {
+    event.preventDefault();
+    if (!newBoardForm.name.trim() || !selectedTeam) return;
+    setCreatingBoard(true);
+    try {
+      const res = await api.post("/boards", {
+        name: newBoardForm.name.trim(),
+        description: newBoardForm.description.trim(),
+        team: selectedTeam,
+      });
+      toast.success(`Board "${res.data.name}" created`);
+      setBoardModalOpen(false);
+      setNewBoardForm({ name: "", description: "" });
+      await loadTeamData(selectedTeam, { boardId: res.data._id });
+    } catch (error) {
+      toast.error(getErrorMessage(error, "Could not create board"));
+    } finally {
+      setCreatingBoard(false);
+    }
+  };
+
+  const handleDeleteBoard = async () => {
+    if (!selectedBoard || boards.length <= 1) return;
+    try {
+      await api.delete(`/boards/${selectedBoard}`);
+      toast.success("Board deleted");
+      const remaining = boards.filter((b) => b._id !== selectedBoard);
+      await loadTeamData(selectedTeam, { boardId: remaining[0]?._id || null });
+    } catch (error) {
+      toast.error(getErrorMessage(error, "Could not delete board"));
+    }
   };
 
   function changeTab(tab) {
@@ -329,6 +423,7 @@ export default function Tasks() {
           status: taskForm.status,
           priority: taskForm.priority,
           team: taskForm.team,
+          board: selectedBoard || undefined,
           assignedTo: taskForm.assignedTo || null,
           dueDate: taskForm.dueDate || null,
           assignmentReason: taskForm.assignmentReason || undefined,
@@ -471,15 +566,17 @@ export default function Tasks() {
 
   const renderActions = (task) => (
     <div className="task-actions">
-      <button
-        type="button"
-        className="icon-btn icon-btn--sm"
-        title="Assign"
-        aria-label={`Assign ${task.title}`}
-        onClick={() => openAssign(task)}
-      >
-        <Icon name="user" size={15} />
-      </button>
+      {isTeamAdmin && (
+        <button
+          type="button"
+          className="icon-btn icon-btn--sm"
+          title="Assign / Reassign"
+          aria-label={`Assign ${task.title}`}
+          onClick={() => openAssign(task)}
+        >
+          <Icon name="user" size={15} />
+        </button>
+      )}
       <button
         type="button"
         className="icon-btn icon-btn--sm"
@@ -489,24 +586,28 @@ export default function Tasks() {
       >
         <Icon name="history" size={15} />
       </button>
-      <button
-        type="button"
-        className="icon-btn icon-btn--sm"
-        title="Edit task"
-        aria-label={`Edit ${task.title}`}
-        onClick={() => openEdit(task)}
-      >
-        <Icon name="edit" size={15} />
-      </button>
-      <button
-        type="button"
-        className="icon-btn icon-btn--sm icon-btn--danger"
-        title="Delete task"
-        aria-label={`Delete ${task.title}`}
-        onClick={() => setDeleteTarget(task)}
-      >
-        <Icon name="trash" size={15} />
-      </button>
+      {isTeamAdmin && (
+        <>
+          <button
+            type="button"
+            className="icon-btn icon-btn--sm"
+            title="Edit task"
+            aria-label={`Edit ${task.title}`}
+            onClick={() => openEdit(task)}
+          >
+            <Icon name="edit" size={15} />
+          </button>
+          <button
+            type="button"
+            className="icon-btn icon-btn--sm icon-btn--danger"
+            title="Delete task"
+            aria-label={`Delete ${task.title}`}
+            onClick={() => setDeleteTarget(task)}
+          >
+            <Icon name="trash" size={15} />
+          </button>
+        </>
+      )}
     </div>
   );
 
@@ -527,12 +628,53 @@ export default function Tasks() {
     >
       <span className={`priority-bar priority-bar--${task.priority}`} />
       <div className="task-card-top">
-        <PriorityBadge priority={task.priority} />
+        <div style={{ display: "flex", alignItems: "center", gap: "0.35rem" }}>
+          {task.taskKey && <span className="task-key-chip">{task.taskKey}</span>}
+          <PriorityBadge priority={task.priority} />
+        </div>
         {renderActions(task)}
       </div>
 
-      <h3 className="task-card-title">{task.title}</h3>
+      <h3
+        className="task-card-title"
+        style={{ cursor: "pointer" }}
+        onClick={() => setDetailTask(task)}
+        title="Open task details, subtasks & comments"
+      >
+        {task.title}
+      </h3>
       {task.description && <p className="task-card-desc">{task.description}</p>}
+
+      {(task.labels || []).length > 0 && (
+        <div className="label-row">
+          {task.labels.slice(0, 3).map((lbl) => (
+            <span key={lbl} className="label-chip">
+              {lbl}
+            </span>
+          ))}
+        </div>
+      )}
+
+      {(task.subtasks || []).length > 0 && (
+        <div className="subtask-bar">
+          <span>
+            {task.subtasks.filter((s) => s.completed).length}/
+            {task.subtasks.length}
+          </span>
+          <div className="subtask-track">
+            <div
+              className="subtask-fill"
+              style={{
+                width: `${Math.round(
+                  (task.subtasks.filter((s) => s.completed).length /
+                    task.subtasks.length) *
+                    100
+                )}%`,
+              }}
+            />
+          </div>
+        </div>
+      )}
 
       <div className="task-tags">
         {activeTab === "my" && (
@@ -619,10 +761,27 @@ export default function Tasks() {
               <span>List</span>
             </button>
           </div>
-          <button type="button" className="btn btn-primary" onClick={() => openCreate("todo")}>
-            <Icon name="plus" size={17} />
-            New task
-          </button>
+          {isTeamAdmin ? (
+            <>
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={() => setAiOpen(true)}
+                disabled={!selectedTeam}
+              >
+                <Icon name="sparkles" size={16} />
+                AI Plan
+              </button>
+              <button type="button" className="btn btn-primary" onClick={() => openCreate("todo")}>
+                <Icon name="plus" size={17} />
+                New task
+              </button>
+            </>
+          ) : (
+            <span className="badge badge--neutral" title="Only admins can add, delete, or reassign tasks">
+              Employee view
+            </span>
+          )}
         </div>
       </header>
 
@@ -667,21 +826,64 @@ export default function Tasks() {
             </div>
 
             {activeTab === "team" && (
-              <div className="team-select">
-                <Icon name="layers" size={15} />
-                <select
-                  value={selectedTeam}
-                  onChange={(event) => changeTeam(event.target.value)}
-                  aria-label="Select team"
-                >
-                  {teams.map((team) => (
-                    <option key={team._id} value={team._id}>
-                      {team.name}
-                    </option>
-                  ))}
-                </select>
-                <Icon name="chevronDown" size={15} />
-              </div>
+              <>
+                <div className="team-select">
+                  <Icon name="layers" size={15} />
+                  <select
+                    value={selectedTeam}
+                    onChange={(event) => changeTeam(event.target.value)}
+                    aria-label="Select team"
+                  >
+                    {teams.map((team) => (
+                      <option key={team._id} value={team._id}>
+                        {team.name}
+                      </option>
+                    ))}
+                  </select>
+                  <Icon name="chevronDown" size={15} />
+                </div>
+
+                {boards.length > 0 && (
+                  <div className="team-select">
+                    <Icon name="board" size={15} />
+                    <select
+                      value={selectedBoard}
+                      onChange={(event) => changeBoard(event.target.value)}
+                      aria-label="Select task board"
+                    >
+                      {boards.map((b) => (
+                        <option key={b._id} value={b._id}>
+                          {b.name}
+                        </option>
+                      ))}
+                    </select>
+                    <Icon name="chevronDown" size={15} />
+                  </div>
+                )}
+
+                {isTeamAdmin && (
+                  <button
+                    type="button"
+                    className="btn btn-secondary btn-sm"
+                    onClick={() => setBoardModalOpen(true)}
+                    title="Create a new task board"
+                  >
+                    <Icon name="plus" size={14} /> New board
+                  </button>
+                )}
+
+                {isTeamAdmin && boards.length > 1 && (
+                  <button
+                    type="button"
+                    className="icon-btn icon-btn--sm icon-btn--danger"
+                    onClick={handleDeleteBoard}
+                    title="Delete current board"
+                    aria-label="Delete current board"
+                  >
+                    <Icon name="trash" size={14} />
+                  </button>
+                )}
+              </>
             )}
 
             <div className="toolbar-search">
@@ -828,16 +1030,36 @@ export default function Tasks() {
                   <header className="board-col-head">
                     <span className={`dot dot--${status}`} />
                     <h2>{STATUS_META[status].label}</h2>
-                    <span className="col-count">{boardData[status].length}</span>
-                    <button
-                      type="button"
-                      className="icon-btn icon-btn--sm col-add"
-                      onClick={() => openCreate(status)}
-                      title={`Add a ${STATUS_META[status].label.toLowerCase()} task`}
-                      aria-label={`Add task to ${STATUS_META[status].label}`}
-                    >
-                      <Icon name="plus" size={15} />
-                    </button>
+                    {(() => {
+                      const colMeta = teamColumns.find((c) => c.key === status);
+                      const count = boardData[status].length;
+                      const wip = colMeta?.wipLimit || 0;
+                      if (wip > 0) {
+                        const cls =
+                          count >= wip
+                            ? "wip-badge wip-badge--full"
+                            : count === wip - 1
+                            ? "wip-badge wip-badge--warn"
+                            : "wip-badge";
+                        return (
+                          <span className={cls} title={`WIP limit: ${wip}`}>
+                            {count}/{wip}
+                          </span>
+                        );
+                      }
+                      return <span className="col-count">{count}</span>;
+                    })()}
+                    {isTeamAdmin && (
+                      <button
+                        type="button"
+                        className="icon-btn icon-btn--sm col-add"
+                        onClick={() => openCreate(status)}
+                        title={`Add a ${STATUS_META[status].label.toLowerCase()} task`}
+                        aria-label={`Add task to ${STATUS_META[status].label}`}
+                      >
+                        <Icon name="plus" size={15} />
+                      </button>
+                    )}
                   </header>
 
                   <div className="board-cards">
@@ -1290,6 +1512,79 @@ export default function Tasks() {
             its assignment history. This cannot be undone.
           </p>
         </div>
+      </Modal>
+
+      <TaskDetailModal
+        task={detailTask}
+        teamTasks={teamTasks}
+        isAdmin={isTeamAdmin}
+        onClose={(shouldRefresh) => {
+          setDetailTask(null);
+          if (shouldRefresh) refreshAll();
+        }}
+        onUpdated={(updated) => {
+          setDetailTask(updated);
+          refreshAll();
+        }}
+      />
+
+      <AiPlannerModal
+        open={aiOpen}
+        onClose={() => setAiOpen(false)}
+        teamId={selectedTeam}
+        boardId={selectedBoard}
+        onCreated={refreshAll}
+      />
+
+      <Modal
+        open={boardModalOpen}
+        onClose={() => setBoardModalOpen(false)}
+        title="Create new task board"
+        subtitle="Organize workstreams, sprints, or departments into separate boards."
+      >
+        <form className="form-stack" onSubmit={handleCreateBoard}>
+          <div className="field">
+            <label>Board name</label>
+            <input
+              type="text"
+              className="input"
+              placeholder="e.g., Sprint 2, Mobile App, QA Board"
+              value={newBoardForm.name}
+              onChange={(e) =>
+                setNewBoardForm((f) => ({ ...f, name: e.target.value }))
+              }
+              required
+            />
+          </div>
+          <div className="field">
+            <label>Description (optional)</label>
+            <input
+              type="text"
+              className="input"
+              placeholder="What is this board for?"
+              value={newBoardForm.description}
+              onChange={(e) =>
+                setNewBoardForm((f) => ({ ...f, description: e.target.value }))
+              }
+            />
+          </div>
+          <div className="modal-actions">
+            <button
+              type="button"
+              className="btn btn-secondary"
+              onClick={() => setBoardModalOpen(false)}
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              className="btn btn-primary"
+              disabled={creatingBoard}
+            >
+              {creatingBoard ? "Creating..." : "Create board"}
+            </button>
+          </div>
+        </form>
       </Modal>
     </div>
   );

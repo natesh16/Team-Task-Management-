@@ -1,0 +1,321 @@
+/* =========================================================
+   Dark theme tokens + New SaaS Feature Styles
+   ========================================================= */
+
+[data-theme="dark"] {
+  --bg: #0c0e1a;
+  --surface: #141728;
+  --surface-soft: #1a1e34;
+  --surface-muted: #1e233b;
+
+  --ink: #eef0fa;
+  --ink-soft: #cbd0ea;
+  --muted: #8f96b8;
+  --muted-light: #6b7294;
+
+  --border: #252a45;
+  --border-strong: #323859;
+
+  --brand: #7467ff;
+  --brand-2: #9b72ff;
+  --brand-deep: #a59bff;
+  --brand-soft: rgba(116, 103, 255, 0.16);
+
+  --green-soft: rgba(14, 159, 120, 0.16);
+  --amber-soft: rgba(217, 130, 10, 0.16);
+  --red-soft: rgba(229, 72, 77, 0.16);
+  --blue-soft: rgba(57, 120, 246, 0.16);
+}
+
+[data-theme="dark"] .board-col {
+  background: var(--surface-muted);
+}
+
+[data-theme="dark"] .board-col--over {
+  background: rgba(116, 103, 255, 0.18);
+}
+
+/* WIP limit & task card metadata */
+.wip-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.12rem 0.45rem;
+  border-radius: 99px;
+  font-size: 0.68rem;
+  font-weight: 700;
+  background: var(--surface);
+  color: var(--muted);
+  border: 1px solid var(--border);
+}
+
+.wip-badge--warn {
+  background: var(--amber-soft);
+  color: var(--amber);
+  border-color: transparent;
+}
+
+.wip-badge--full {
+  background: var(--red-soft);
+  color: var(--red);
+  border-color: transparent;
+}
+
+.task-key-chip {
+  font-size: 0.68rem;
+  font-weight: 750;
+  letter-spacing: 0.03em;
+  color: var(--muted);
+  background: var(--surface-muted);
+  padding: 0.12rem 0.42rem;
+  border-radius: 6px;
+}
+
+.label-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+}
+
+.label-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  padding: 0.12rem 0.45rem;
+  border-radius: 99px;
+  font-size: 0.68rem;
+  font-weight: 650;
+  background: var(--brand-soft);
+  color: var(--brand-deep);
+}
+
+.subtask-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+
+.subtask-track {
+  flex: 1;
+  height: 5px;
+  border-radius: 99px;
+  background: var(--surface-muted);
+  overflow: hidden;
+}
+
+.subtask-fill {
+  height: 100%;
+  background: var(--green);
+  border-radius: 99px;
+  transition: width 0.2s ease;
+}
+
+/* Nav unread badge */
+.nav-badge {
+  margin-left: auto;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 0.38rem;
+  border-radius: 99px;
+  background: var(--red);
+  color: #fff;
+  font-size: 0.68rem;
+  font-weight: 750;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Modal tabs */
+.modal-tabs {
+  display: flex;
+  gap: 0.25rem;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 1rem;
+  overflow-x: auto;
+}
+
+.modal-tab {
+  padding: 0.55rem 0.85rem;
+  border: none;
+  background: transparent;
+  font-size: 0.82rem;
+  font-weight: 650;
+  color: var(--muted);
+  border-bottom: 2px solid transparent;
+  white-space: nowrap;
+}
+
+.modal-tab--active {
+  color: var(--brand);
+  border-bottom-color: var(--brand);
+}
+
+/* Subtask & comment lists */
+.check-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.check-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.55rem 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-soft);
+}
+
+.check-row-title {
+  flex: 1;
+  font-size: 0.86rem;
+}
+
+.check-row-title--done {
+  text-decoration: line-through;
+  color: var(--muted);
+}
+
+/* Calendar Grid */
+.calendar-grid {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  border-top: 1px solid var(--border);
+  border-left: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: var(--surface);
+}
+
+.calendar-dow {
+  padding: 0.55rem 0.65rem;
+  font-size: 0.74rem;
+  font-weight: 700;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  background: var(--surface-soft);
+  border-right: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
+
+.calendar-cell {
+  min-height: 112px;
+  padding: 0.45rem;
+  border-right: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.calendar-cell--muted {
+  background: var(--surface-soft);
+  opacity: 0.6;
+}
+
+.calendar-cell--today {
+  background: var(--brand-soft);
+}
+
+.calendar-day-num {
+  font-size: 0.76rem;
+  font-weight: 700;
+  color: var(--ink-soft);
+}
+
+.calendar-event {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 0.22rem 0.4rem;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.calendar-event--high {
+  border-left: 3px solid var(--red);
+}
+
+.calendar-event--medium {
+  border-left: 3px solid var(--amber);
+}
+
+.calendar-event--low {
+  border-left: 3px solid var(--green);
+}
+
+/* Time Tracker */
+.timer-hero {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 1rem;
+  padding: 2rem 1.25rem;
+}
+
+.timer-clock {
+  font-size: clamp(2.8rem, 6vw, 4.2rem);
+  font-weight: 800;
+  letter-spacing: -0.04em;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink);
+}
+
+.timer-controls {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.65rem;
+}
+
+/* Analytics bars */
+.bar-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.bar-row {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.bar-row-head {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+
+.bar-track {
+  height: 9px;
+  border-radius: 99px;
+  background: var(--surface-muted);
+  overflow: hidden;
+}
+
+.bar-fill {
+  height: 100%;
+  border-radius: 99px;
+  background: var(--brand);
+  transition: width 0.25s ease;
+}
+
+@media (max-width: 900px) {
+  .calendar-cell {
+    min-height: 76px;
+  }
+}

@@ -14,6 +14,11 @@ import Dashboard from "./pages/Dashboard";
 import Teams from "./pages/Teams";
 import TeamDetail from "./pages/TeamDetail";
 import Tasks from "./pages/Tasks";
+import Calendar from "./pages/Calendar";
+import TimeTracking from "./pages/TimeTracking";
+import Analytics from "./pages/Analytics";
+import Inbox from "./pages/Inbox";
+import Automations from "./pages/Automations";
 import Profile from "./pages/Profile";
 import NotFound from "./pages/NotFound";
 
@@ -55,9 +60,14 @@ export default function App() {
               }
             >
               <Route path="/dashboard" element={<Dashboard />} />
+              <Route path="/tasks" element={<Tasks />} />
+              <Route path="/calendar" element={<Calendar />} />
+              <Route path="/time" element={<TimeTracking />} />
+              <Route path="/analytics" element={<Analytics />} />
+              <Route path="/inbox" element={<Inbox />} />
+              <Route path="/automations" element={<Automations />} />
               <Route path="/teams" element={<Teams />} />
               <Route path="/teams/:id" element={<TeamDetail />} />
-              <Route path="/tasks" element={<Tasks />} />
               <Route path="/profile" element={<Profile />} />
             </Route>
 
