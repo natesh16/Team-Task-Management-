@@ -6,10 +6,16 @@ require("dotenv").config();
 
 const authRoutes = require("./routes/authRoutes");
 const teamRoutes = require("./routes/teamRoutes");
+const boardRoutes = require("./routes/boardRoutes");
 const taskRoutes = require("./routes/taskRoutes");
+const timeRoutes = require("./routes/timeRoutes");
+const notificationRoutes = require("./routes/notificationRoutes");
+const automationRoutes = require("./routes/automationRoutes");
+const analyticsRoutes = require("./routes/analyticsRoutes");
+const aiRoutes = require("./routes/aiRoutes");
+
 const User = require("./models/User");
 const { seedDemo } = require("./seeders/seedDemo");
-
 const connectDB = require("./config/db");
 
 const app = express();
@@ -22,7 +28,13 @@ app.use(express.json());
 // Routes
 app.use("/api/auth", authRoutes);
 app.use("/api/teams", teamRoutes);
+app.use("/api/boards", boardRoutes);
 app.use("/api/tasks", taskRoutes);
+app.use("/api/time", timeRoutes);
+app.use("/api/notifications", notificationRoutes);
+app.use("/api/automations", automationRoutes);
+app.use("/api/analytics", analyticsRoutes);
+app.use("/api/ai", aiRoutes);
 
 // Health check
 app.get("/api/health", (req, res) => {
@@ -44,7 +56,8 @@ app.use((req, res, next) => {
 
 // Central error handler - always respond with JSON
 app.use((err, req, res, next) => {
-  let statusCode = res.statusCode === 200 ? 500 : res.statusCode;
+  let statusCode =
+    err.statusCode || (res.statusCode === 200 ? 500 : res.statusCode);
   let message = err.message || "Server error";
 
   // Turn model-level validation and bad ObjectId errors into clean 400 responses.
@@ -85,11 +98,13 @@ const start = async () => {
     console.error(`Demo seed skipped: ${error.message}`);
   }
 
-  app.listen(PORT, () => {
+  return app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
   });
 };
 
-start();
+if (require.main === module) {
+  start();
+}
 
-module.exports = app;
+module.exports = { app, start };

@@ -7,12 +7,14 @@ const {
   joinTeam,
   updateTeam,
   deleteTeam,
+  updateWorkflow,
 } = require("../controllers/teamController");
 
 const router = express.Router();
 
 router.route("/").get(protect, getTeams).post(protect, createTeam);
 router.route("/join").post(protect, joinTeam);
+router.route("/:id/workflow").put(protect, updateWorkflow);
 router
   .route("/:id")
   .get(protect, getTeamById)

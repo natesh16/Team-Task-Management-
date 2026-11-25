@@ -1,6 +1,7 @@
 const asyncHandler = require("express-async-handler");
 const Team = require("../models/Team");
 const Task = require("../models/Task");
+const Board = require("../models/Board");
 
 // @desc    Get all teams for user
 // @route   GET /api/teams
@@ -152,11 +153,64 @@ const deleteTeam = asyncHandler(async (req, res) => {
     throw new Error("Only the team owner can delete this team");
   }
 
-  // Remove all tasks that belong to this team
+  // Remove all tasks and boards that belong to this team
   await Task.deleteMany({ team: team._id });
+  await Board.deleteMany({ team: team._id });
   await team.deleteOne();
 
   res.json({ message: "Team removed", _id: req.params.id });
+});
+
+// @desc    Update team workflow columns and WIP limits
+// @route   PUT /api/teams/:id/workflow
+// @access  Private (owner or admin)
+const updateWorkflow = asyncHandler(async (req, res) => {
+  const team = await Team.findById(req.params.id);
+
+  if (!team) {
+    res.status(404);
+    throw new Error("Team not found");
+  }
+
+  const isOwner = team.owner.toString() === req.user.id;
+  const member = team.members.find((m) => m.user.toString() === req.user.id);
+  const isAdmin = isOwner || (member && member.role === "admin");
+
+  if (!isAdmin) {
+    res.status(403);
+    throw new Error("Only team admins can update workflow settings");
+  }
+
+  const { columns } = req.body;
+  if (!Array.isArray(columns) || columns.length === 0) {
+    res.status(400);
+    throw new Error("Columns array is required");
+  }
+
+  const validKeys = new Set(["backlog", "todo", "in-progress", "review", "done"]);
+  const sanitized = columns
+    .filter((col) => col && validKeys.has(col.key))
+    .map((col, idx) => ({
+      key: col.key,
+      label: (col.label || col.key).toString().trim(),
+      order: Number.isFinite(Number(col.order)) ? Number(col.order) : idx,
+      wipLimit: Math.max(0, parseInt(col.wipLimit, 10) || 0),
+      color: col.color || "#5b4bf5",
+    }));
+
+  if (sanitized.length === 0) {
+    res.status(400);
+    throw new Error("At least one valid workflow column is required");
+  }
+
+  team.columns = sanitized;
+  await team.save();
+
+  const updated = await Team.findById(team._id).populate(
+    "owner members.user",
+    "name email"
+  );
+  res.json(updated);
 });
 
 module.exports = {
@@ -166,4 +220,5 @@ module.exports = {
   joinTeam,
   updateTeam,
   deleteTeam,
+  updateWorkflow,
 };
